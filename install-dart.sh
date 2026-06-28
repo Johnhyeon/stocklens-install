@@ -83,6 +83,21 @@ export DARTLENS_TARGET
 printf '%b[3/4] Configuring MCP (target=%s, DART API key required)...%b\n' "$CYAN" "$DARTLENS_TARGET" "$NC"
 printf '      DART API 키가 없다면 https://opendart.fss.or.kr 에서 발급 (분당 1,000건 / 일 20,000건)\n\n'
 
+# Claude 클라이언트(Desktop 앱 또는 Code CLI) 설치 여부 사전 확인.
+# 둘 다 없으면 setup 은 빈 config 만 만들고 성공으로 끝나는데, 읽을 앱이 없어
+# DartLens 가 동작하지 않는다. 조용한 실패를 막기 위해 경고한다.
+if [ "$OS" = "macOS" ]; then
+    DESKTOP_CFG_DIR="$HOME/Library/Application Support/Claude"
+else
+    DESKTOP_CFG_DIR="$HOME/.config/Claude"
+fi
+if [ ! -d "$DESKTOP_CFG_DIR" ] && ! command -v claude > /dev/null 2>&1; then
+    printf '      %b[WARN] Claude Desktop / Claude Code 가 설치된 흔적이 없습니다.%b\n' "$YELLOW" "$NC"
+    printf '             MCP 설정은 진행하지만, Claude Desktop 을 먼저 설치해야 동작합니다.\n'
+    printf '             다운로드: https://claude.ai/download\n'
+    printf '             설치 후 이 스크립트를 다시 실행하거나 dartlens-setup 을 한 번 더 돌리세요.\n\n'
+fi
+
 # arrays 대신 함수 + "$@" 으로 우회 (POSIX 호환).
 # curl | sh 일 때 stdin은 파이프라 input() 이 막힌다. /dev/tty 가 있으면
 # 거기에 연결해서 키 입력을 받게 한다. DART_API_KEY env 가 있으면 prompt 없이 진행.
@@ -94,15 +109,34 @@ run_setup() {
     fi
 }
 
-if [ -n "$DART_API_KEY" ] || [ ! -e /dev/tty ]; then
-    run_setup
-else
-    run_setup < /dev/tty
-fi
+# /dev/tty 분기를 담은 래퍼. DART_API_KEY 가 있거나 tty 가 없으면 prompt 없이 진행.
+run_setup_auto() {
+    if [ -n "$DART_API_KEY" ] || [ ! -e /dev/tty ]; then
+        run_setup
+    else
+        run_setup < /dev/tty
+    fi
+}
 
-if [ $? -ne 0 ]; then
+# 갓 설치된 바이너리의 첫 실행이 백신/환경 마무리로 1회성 실패할 수 있어
+# 첫 시도 실패 시 잠깐 쉬고 1회 자동 재시도한 뒤에야 [FAIL] 로 종료한다.
+setup_ok=0
+attempt=1
+max_attempts=2
+while [ "$attempt" -le "$max_attempts" ]; do
+    if run_setup_auto; then
+        setup_ok=1
+        break
+    fi
+    if [ "$attempt" -lt "$max_attempts" ]; then
+        printf '      %b[RETRY] dartlens-setup 첫 시도 실패. 3초 후 재시도... (%s/%s)%b\n' "$YELLOW" "$attempt" "$max_attempts" "$NC"
+        sleep 3
+    fi
+    attempt=$((attempt + 1))
+done
+if [ "$setup_ok" -ne 1 ]; then
     printf '\n'
-    printf '%b[FAIL] dartlens-setup failed. 키를 직접 다시 등록하려면:%b\n' "$RED" "$NC"
+    printf '%b[FAIL] dartlens-setup failed after %s attempts. 키를 직접 다시 등록하려면:%b\n' "$RED" "$max_attempts" "$NC"
     printf '%b       dartlens-setup <YOUR_DART_API_KEY>%b\n' "$RED" "$NC"
     exit 1
 fi

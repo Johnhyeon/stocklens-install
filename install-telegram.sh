@@ -81,6 +81,21 @@ export TELEGRAMLENS_TARGET
 
 printf '%b[3/4] Configuring MCP (target=%s)...%b\n' "$CYAN" "$TELEGRAMLENS_TARGET" "$NC"
 
+# Claude 클라이언트(Desktop 앱 또는 Code CLI) 설치 여부 사전 확인.
+# 둘 다 없으면 setup 은 빈 config 만 만들고 성공으로 끝나는데, 읽을 앱이 없어
+# TelegramLens 가 동작하지 않는다. 조용한 실패를 막기 위해 경고한다.
+if [ "$OS" = "macOS" ]; then
+    DESKTOP_CFG_DIR="$HOME/Library/Application Support/Claude"
+else
+    DESKTOP_CFG_DIR="$HOME/.config/Claude"
+fi
+if [ ! -d "$DESKTOP_CFG_DIR" ] && ! command -v claude > /dev/null 2>&1; then
+    printf '      %b[WARN] Claude Desktop / Claude Code 가 설치된 흔적이 없습니다.%b\n' "$YELLOW" "$NC"
+    printf '             MCP 설정은 진행하지만, Claude Desktop 을 먼저 설치해야 동작합니다.\n'
+    printf '             다운로드: https://claude.ai/download\n'
+    printf '             설치 후 이 스크립트를 다시 실행하거나 telegramlens-setup 을 한 번 더 돌리세요.\n\n'
+fi
+
 run_setup() {
     if [ -x "$LOCAL_BIN/telegramlens-setup" ]; then
         "$LOCAL_BIN/telegramlens-setup" "$@"
@@ -88,9 +103,25 @@ run_setup() {
         uv tool run --from telegramlens-mcp telegramlens-setup "$@"
     fi
 }
-if ! run_setup; then
+# 갓 설치된 바이너리의 첫 실행이 백신/환경 마무리로 1회성 실패할 수 있어
+# 첫 시도 실패 시 잠깐 쉬고 1회 자동 재시도한 뒤에야 [FAIL] 로 종료한다.
+setup_ok=0
+attempt=1
+max_attempts=2
+while [ "$attempt" -le "$max_attempts" ]; do
+    if run_setup; then
+        setup_ok=1
+        break
+    fi
+    if [ "$attempt" -lt "$max_attempts" ]; then
+        printf '      %b[RETRY] telegramlens-setup 첫 시도 실패. 3초 후 재시도... (%s/%s)%b\n' "$YELLOW" "$attempt" "$max_attempts" "$NC"
+        sleep 3
+    fi
+    attempt=$((attempt + 1))
+done
+if [ "$setup_ok" -ne 1 ]; then
     printf '\n'
-    printf '%b[FAIL] telegramlens-setup failed.%b\n' "$RED" "$NC"
+    printf '%b[FAIL] telegramlens-setup failed after %s attempts.%b\n' "$RED" "$max_attempts" "$NC"
     exit 1
 fi
 printf '\n'
